@@ -1,20 +1,14 @@
 # Notes & Learnings: Defeating Nondeterminism in LLM Inference
 
-Notes & learnings from reading the amazing blog from He, Horace and Thinking Machines Lab, "Defeating Nondeterminism in LLM Inference", Thinking Machines Lab: Connectionism, Sep 2025. Some examples & code & sentences are copied from the original blog, also added with some of my understandings for personal learning purpose.
-
----
+Notes & learnings from reading the amazing blog from He, Horace and Thinking Machines Lab, ["Defeating Nondeterminism in LLM Inference"](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/), Thinking Machines Lab: Connectionism, Sep 2025. Some examples & code & sentences are copied from the original blog, also added with some of my understandings for personal learning purpose.
 
 ## Problem the Blog Explained
 
 Why do current LLM inference engines show nondeterministic results even when setting sampling temperature to 0? The blog provides a comprehensive overview of the culprit of nondeterminism in LLM inference and suggests strategies to avoid it.
 
----
-
 ## "Concurrency + Floating Point" Hypothesis
 
 The blog first reminds me of a situation we noticed before: when we were writing matrix multiplication implementations from scratch (both using CUDA for GPU and using C++ for CPU — we implemented for Intel machines using AMX/AVX intrinsics), we noticed that the results of different implementations sometimes have slight differences. Our hypothesis on this aligned with the "concurrency + floating point" hypothesis mentioned in the blog (different implementations and the nature of GPU parallel computing cause different orders of additions, e.g., `(a + b) + c != a + (b + c)` due to precision and rounding errors).
-
----
 
 ## Floating Point Addition Order Problems — Concrete Example
 
@@ -53,8 +47,6 @@ print("d2:", d2)
 
 As mentioned in the blog, when we add two floating-point numbers with different exponents (e.g. 1230 and 23.4), if the results cannot maintain enough digits of precision it will drop last digits.
 
----
-
 ## The Direct Cause of Nondeterminism in LLM Inference
 
 But how exactly does LLM inference get affected by the "concurrency and floating point hypothesis"? What's the more direct cause of this?
@@ -62,8 +54,6 @@ But how exactly does LLM inference get affected by the "concurrency and floating
 The blog points out that the culprit is: **"The primary reason nearly all LLM inference endpoints are nondeterministic is that the load (and thus batch size) nondeterministically varies! If we'd like to avoid nondeterminism in our inference servers, we must achieve batch invariance in our kernels."**
 
 Now let's dive deep into details on why dynamic batch size causes nondeterminism and how to achieve batch-invariant kernels.
-
----
 
 ## How Dynamic Batch Size Affects Matrix Multiplication & How to Achieve Batch-Invariant Matrix Multiplication
 
@@ -96,8 +86,6 @@ print((out1 - out2).abs().max()) # tensor(1669.2500, device='cuda:0')
 
 "Doing a matrix multiplication by taking the first element of the batch" gives different results from "doing a matrix multiplication on the full matrix and then taking the first element of the batch". When calling `torch.mm(a[:1], b)`, M = 1, but when calling `torch.mm(a, b)[:1]`, M = B = 2048. I think different M values under the hood call matrix multiplication in different ways (e.g., different tile configurations, or even different matrix multiplication implementations).
 
----
-
 ## How Dynamic Batch Size Affects Math Operations & How to Achieve Batch-Invariant Reduction Operations
 
 Besides the matrix multiplication kernels, there are math operation kernels in model forward passes (e.g., RMSNorm, LayerNorm, softmax). Those math operations usually involve getting sum/max/etc. The easiest way of getting the sum or max would be using atomic operations, which will cause nondeterministic results because the order is not guaranteed when using atomics. But we usually use reduction instead of atomic operation to get the sum/max; however, for different batch sizes, the implementation can change under the hood:
@@ -108,8 +96,6 @@ Besides the matrix multiplication kernels, there are math operation kernels in m
 
 **"The easiest solution is to simply ignore these cases altogether. This is not completely unreasonable — a small batch size means that the kernel is likely to execute quickly anyway, and so a slowdown may not be catastrophic."** But if we want to still parallelize each batch calculation across CUDA blocks, we need to be cautious about the reduction order to be invariant of the batch size. I think implementation like: warp reduction to get each warp's local sum and save to shared memory based on the warp id, say we have 1024 threads, so we need 1024 / 32 = 32 values in shared memory per CUDA block, and let the first 32 threads (first warp) to read the value from shared memory and get the CUDA block sum and save to HBM based on the CUDA block id, say we have 108 CUDA blocks working on each batch, ceil_div(108, 32) = 4, then we only let the first CUDA block's first 4 warps do the final reduction, all of the reductions will be warp level reduction, and by calculating per block sum through shared memory and calculating global sum through HBM, this kind of reduction implementation should be batch-invariant, even each batch is handled by many CUDA blocks.
 
----
-
 ## How Dynamic Batch Size Affects Attention & How to Achieve Batch-Invariant Attention
 
 As mentioned in the blog, "depending on the inference engine's choices, it's possible that a sequence might get processed in several parts (such as in chunked prefill) or perhaps all at once (if the prefill isn't split up). One example given by the blog looks when using paged KV cache, say block size is 32, we already have 80 tokens (which needs 3 blocks), we then compute 48 tokens (which needs 2 blocks), so 5 blocks in total to compute — which is different reduction order compared with if those KV cache are continuous for the 80 + 48 = 128 tokens which can fit in 4 blocks.
@@ -118,13 +104,9 @@ To solve this, the blog says we just need to update the KV cache and page table 
 
 Besides the above example, FlashAttention might choose different parallelization strategy based on batch size, e.g., for small batch size, uses Split-KV (parallelize over sequence dimension for GPU utilization), for large batch size, uses regular FlashAttention (sufficient parallelism from batch dimension). The solution given by the blog is: **"In other words, instead of fixing the # of splits, we fix the size of each split and then end up with a varying number of splits. In this manner, we can guarantee that regardless of how many tokens we're processing, we always perform the identical reduction order."**
 
----
-
 ## Summary
 
 From above discussions, now we can see exactly how the dynamic batch size might make the kernels in model forward pass non-deterministic. If your system requires high determinism, you need batch-invariant kernels. **"In order to achieve batch invariance, it's necessary that the reduction order for a given token does not depend on how many other tokens from its sequence are being simultaneously processed."** Though the tradeoff is performance can get hurt a bit.
-
----
 
 ## Implementation from the Blog Author's Repo
 
@@ -141,8 +123,6 @@ _batch_invariant_LIB.impl("aten::mean.dim", mean_batch_invariant, "CUDA")
 ```
 
 This allows the library to intercept standard PyTorch operations and replace them with deterministic versions without modifying the model code.
-
----
 
 ## Batch-Invariant Matmul
 
@@ -190,8 +170,6 @@ configs = {
     },
 }
 ```
-
----
 
 ## Batch-Invariant Reduction Operations
 
@@ -312,10 +290,8 @@ def _log_softmax_kernel(
         tl.store(output_row_start_ptr + col_idx, output, mask=mask)
 ```
 
----
-
 ## Reference
 
-- He, Horace and Thinking Machines Lab, "Defeating Nondeterminism in LLM Inference", Thinking Machines Lab: Connectionism, Sep 2025.
+- He, Horace and Thinking Machines Lab, ["Defeating Nondeterminism in LLM Inference"](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/), Thinking Machines Lab: Connectionism, Sep 2025.
 - My original blog: [https://medium.com/@yuezhang2455/llm-blog-learning-thinking-machine-labs-defeating-nondeterminism-in-llm-inference-8c059846d30f](https://medium.com/@yuezhang2455/llm-blog-learning-thinking-machine-labs-defeating-nondeterminism-in-llm-inference-8c059846d30f), copied to here as I will maintain blogs here going forward.
 
