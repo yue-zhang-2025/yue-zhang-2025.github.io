@@ -1,4 +1,4 @@
-# My Blackwell NVFP4 Kernel Hackathon Journey
+# My Blackwell NVFP4 Kernel Hackathon Journey: From 100μs to 22.3μs
 
 I recently joined the [Blackwell NVFP4 Kernel Hackathon](https://luma.com/9n27uem4?tk=6qaMWh) hosted by GPU Mode. This blog shares my kernel optimization journey for Problem 1: NVFP4 Batched GEMV, where I achieved a final submission of **22.392μs** on the [leaderboard](https://www.gpumode.com/v2/leaderboard/595?tab=rankings).
 
