@@ -314,6 +314,7 @@ The combination of removing shared memory overhead, vectorized loads, and hardwa
 
 I pushed further with [PTX assembly](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html) to replace the intrinsics and explicitly do fused multiply-accumulate:
 
+{% raw %}
 ```cpp
 __device__ __forceinline__ float decode_mul_accumulate_fp4x8(
     const uint32_t a_packed,
@@ -357,9 +358,11 @@ __device__ __forceinline__ float decode_mul_accumulate_fp4x8(
     return result;
 }
 ```
+{% endraw %}
 
 And for FP8 scale factors:
 
+{% raw %}
 ```cpp
 __device__ __forceinline__ void decode_fp8x4_e4m3fn_half4(
     const uint32_t packed, __half& h0, __half& h1, __half& h2, __half& h3)
@@ -385,6 +388,7 @@ __device__ __forceinline__ void decode_fp8x4_e4m3fn_half4(
     h3 = h_high.y;
 }
 ```
+{% endraw %}
 
 ## Optimization 4: Parameter Tuning (~27μs → ~26μs)
 
@@ -428,6 +432,7 @@ I tried 3 or 4 tiles per loop, but those were slightly slower. My hypothesis was
 
 The final optimization fused everything into one large PTX block — decode A, B, scales, and all multiplications and adds:
 
+{% raw %}
 ```cpp
 __device__ __forceinline__ void process_tile(
     float& local_sum,
@@ -616,6 +621,7 @@ __device__ __forceinline__ void process_tile(
 
 }
 ```
+{% endraw %}
 
 This kernel achieved **~22.3μs**, which was my final submission.
 
